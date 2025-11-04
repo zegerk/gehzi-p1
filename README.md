@@ -69,6 +69,16 @@ Cmake script has both installation scenarios for Linux and Mac Os X.
 *IMPORTANT!* If you upgrade from previous version of the filter, you NEED to manually reconfigure your previous printer and explicitly select the PPD file from here.
 CUPS by default will not do it, and previous PPD with this filter will fail end even crash the job. So, if you previously used the driver from this repository, and it became crashing after installing this one, you need to go to printer's preferences and select 'new' driver instead of previous cached by CUPS.
 
+Included PPDs
+-------------
+This repository ships several PPD files for common compatible devices. The following PPDs are provided (found in the ppd/ directory after building):
+
+- zj58.ppd — Zijiang ZJ-58 and similar 58mm printers
+- zj80.ppd — 80mm variants
+- xp58.ppd — XPrinter XP-58 family
+- tm20.ppd — Epson TM-T20 compatible model
+- p1.ppd — P1 label printer (included and supported)
+
 Recent changes (Nov 2025)
 -------------------------
 This tree was extended with an integrated Floyd–Steinberg error-diffusion dither and several robustness / build fixes. If you updated from an earlier checkout, read this short summary and rebuild the filter.
