@@ -6,6 +6,9 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <math.h>
+#include <stdint.h>
+#include <string.h>
 
 #ifndef DEBUGFILE
 #define DEBUGFILE "/tmp/debugraster.txt"
@@ -336,6 +339,205 @@ static inline int line_is_empty(const unsigned char *pBuf, unsigned iSize) {
   return -1;
 }
 
+// Persistent error buffers for Floyd–Steinberg (allocated per page)
+static int *fs_err_curr = NULL;
+static int *fs_err_next = NULL;
+static int fs_err_size = 0; // equals width_pixels + 2 when allocated
+// Dither parameters
+static const double fs_gamma = 1.50; // slight gamma to compensate dot gain
+static const int FS_SCALE = 16; // fixed-point scale for error diffusion
+static const int FS_CLAMP = 32767; // clamp for error values to avoid runaway
+static const int fs_serpentine = 1; // enable serpentine scanning
+
+static int ensure_fs_error_buffers(int width_pixels) {
+  int need = width_pixels + 2;
+  if (fs_err_size != need) {
+    free(fs_err_curr);
+    free(fs_err_next);
+    fs_err_curr = (int*)calloc((size_t)need, sizeof(int));
+    fs_err_next = (int*)calloc((size_t)need, sizeof(int));
+    if (!fs_err_curr || !fs_err_next) {
+      free(fs_err_curr); fs_err_curr = NULL;
+      free(fs_err_next); fs_err_next = NULL;
+      fs_err_size = 0;
+      return -1;
+    }
+    fs_err_size = need;
+  } else {
+    // zero buffers
+    memset(fs_err_curr, 0, (size_t)need * sizeof(int));
+    memset(fs_err_next, 0, (size_t)need * sizeof(int));
+  }
+  return 0;
+}
+
+static void free_fs_error_buffers(void) {
+  free(fs_err_curr); fs_err_curr = NULL;
+  free(fs_err_next); fs_err_next = NULL;
+  fs_err_size = 0;
+}
+
+// Floyd–Steinberg dither a block of pixels into packed 1bpp using integer
+// arithmetic. Uses persistent error buffers (fs_err_curr / fs_err_next) so
+// diffusion continues across blocks and avoids visible seams.
+// src: source block pointer (stride src_bpl), bitsPerPixel (1,8,24), numColors,
+// width_pixels: number of pixels to dither per row, height: number of rows,
+// width_bytes: output row bytes (rounded up width/8).
+// Returns malloc'd buffer (width_bytes * height) which must be freed by caller.
+static unsigned char *floyd_steinberg_dither_block(const unsigned char *src,
+                                                   int src_bpl,
+                                                   int bitsPerPixel,
+                                                   int numColors,
+                                                   int width_pixels,
+                                                   int height,
+                                                   int width_bytes)
+{
+  if (ensure_fs_error_buffers(width_pixels) != 0)
+    return NULL;
+
+  int y, x;
+  unsigned char *dst = (unsigned char*)malloc((size_t)width_bytes * (size_t)height);
+  if (!dst) return NULL;
+  memset(dst, 0, (size_t)width_bytes * (size_t)height);
+
+  // local aliases to error arrays
+  int *curr = fs_err_curr;
+  int *next = fs_err_next;
+
+  // Precompute mask for last byte if width not multiple of 8
+  int tail_bits = width_pixels & 7;
+  unsigned char last_mask = 0xFF;
+  if (tail_bits) last_mask = (unsigned char)(0xFF << (8 - tail_bits));
+
+  for (y = 0; y < height; ++y) {
+    const unsigned char *srow = src + (size_t)y * (size_t)src_bpl;
+    int leftToRight = 1;
+    if (fs_serpentine && (y & 1)) leftToRight = 0;
+
+    if (leftToRight) {
+      // left-to-right
+      for (x = 0; x < width_pixels; ++x) {
+        int i = x + 1; // error buffer offset
+        // compute luminance
+        double lum = 0.0;
+        if (bitsPerPixel == 1) {
+          int byteIdx = x >> 3;
+          int bit = 7 - (x & 7);
+          unsigned char b = srow[byteIdx];
+          lum = (((b >> bit) & 1) ? 0.0 : 255.0);
+        } else if (bitsPerPixel == 8 || numColors == 1) {
+          unsigned char v = srow[x];
+          lum = (double)v;
+        } else {
+          int sp = x * 3;
+          unsigned char r = srow[sp];
+          unsigned char g = srow[sp+1];
+          unsigned char b = srow[sp+2];
+          lum = 0.299 * (double)r + 0.587 * (double)g + 0.114 * (double)b;
+        }
+
+        // apply gamma and scale to fixed point (FS_SCALE)
+        double gval = pow(lum / 255.0, fs_gamma) * 255.0;
+        int val = (int) (gval * FS_SCALE + (double)curr[i]); // curr already scaled by FS_SCALE
+
+        // threshold at 128*FS_SCALE
+        int is_black = (val < (128 * FS_SCALE)) ? 1 : 0;
+        int quant = is_black ? 0 : (255 * FS_SCALE);
+        int err = val - quant; // scaled error
+
+        // distribute errors into integer buffers
+        // curr[i+1] += err * 7/16
+        // next[i-1] += err * 3/16
+        // next[i]   += err * 5/16
+        // next[i+1] += err * 1/16
+        curr[i+1] += (err * 7) / 16;
+        next[i-1] += (err * 3) / 16;
+        next[i]   += (err * 5) / 16;
+        next[i+1] += (err * 1) / 16;
+
+        // clamp nearby values to avoid runaway
+        if (curr[i+1] > FS_CLAMP) curr[i+1] = FS_CLAMP;
+        if (curr[i+1] < -FS_CLAMP) curr[i+1] = -FS_CLAMP;
+        if (next[i-1] > FS_CLAMP) next[i-1] = FS_CLAMP;
+        if (next[i-1] < -FS_CLAMP) next[i-1] = -FS_CLAMP;
+        if (next[i] > FS_CLAMP) next[i] = FS_CLAMP;
+        if (next[i] < -FS_CLAMP) next[i] = -FS_CLAMP;
+        if (next[i+1] > FS_CLAMP) next[i+1] = FS_CLAMP;
+        if (next[i+1] < -FS_CLAMP) next[i+1] = -FS_CLAMP;
+
+        // Printer expects 1-bit == white and 0-bit == black. Set bits for white pixels.
+        if (!is_black) {
+          int byteIdx = x >> 3;
+          int bit = 7 - (x & 7);
+          dst[y * width_bytes + byteIdx] |= (unsigned char)(1u << bit);
+        }
+      }
+    } else {
+      // right-to-left (serpentine). Mirror error distribution.
+      for (x = width_pixels - 1; x >= 0; --x) {
+        int i = x + 1;
+        double lum = 0.0;
+        if (bitsPerPixel == 1) {
+          int byteIdx = x >> 3;
+          int bit = 7 - (x & 7);
+          unsigned char b = srow[byteIdx];
+          lum = (((b >> bit) & 1) ? 0.0 : 255.0);
+        } else if (bitsPerPixel == 8 || numColors == 1) {
+          unsigned char v = srow[x];
+          lum = (double)v;
+        } else {
+          int sp = x * 3;
+          unsigned char r = srow[sp];
+          unsigned char g = srow[sp+1];
+          unsigned char b = srow[sp+2];
+          lum = 0.299 * (double)r + 0.587 * (double)g + 0.114 * (double)b;
+        }
+
+        double gval = pow(lum / 255.0, fs_gamma) * 255.0;
+        int val = (int) (gval * FS_SCALE + (double)curr[i]);
+        int is_black = (val < (128 * FS_SCALE)) ? 1 : 0;
+        int quant = is_black ? 0 : (255 * FS_SCALE);
+        int err = val - quant;
+
+        // mirrored distribution for right-to-left
+        curr[i-1] += (err * 7) / 16;
+        next[i+1] += (err * 3) / 16;
+        next[i]   += (err * 5) / 16;
+        next[i-1] += (err * 1) / 16; // note: small amount back to left
+
+        if (curr[i-1] > FS_CLAMP) curr[i-1] = FS_CLAMP;
+        if (curr[i-1] < -FS_CLAMP) curr[i-1] = -FS_CLAMP;
+        if (next[i+1] > FS_CLAMP) next[i+1] = FS_CLAMP;
+        if (next[i+1] < -FS_CLAMP) next[i+1] = -FS_CLAMP;
+        if (next[i] > FS_CLAMP) next[i] = FS_CLAMP;
+        if (next[i] < -FS_CLAMP) next[i] = -FS_CLAMP;
+        if (next[i-1] > FS_CLAMP) next[i-1] = FS_CLAMP;
+        if (next[i-1] < -FS_CLAMP) next[i-1] = -FS_CLAMP;
+
+        if (!is_black) {
+          int byteIdx = x >> 3;
+          int bit = 7 - (x & 7);
+          dst[y * width_bytes + byteIdx] |= (unsigned char)(1u << bit);
+        }
+      }
+    }
+
+    // mask last byte's padding bits if necessary
+    if (tail_bits) {
+      int lastByteIdx = width_bytes - 1;
+      dst[y * width_bytes + lastByteIdx] &= last_mask;
+    }
+
+    // rotate error lines: move next -> curr, zero next
+    for (x = 0; x < width_pixels + 2; ++x) {
+      curr[x] = next[x];
+      next[x] = 0;
+    }
+  }
+
+  return dst;
+}
+
 static inline void send_raster(const unsigned char *pBuf, int width8,
                                int height) {
   if (!height)
@@ -381,6 +583,7 @@ static inline void send_raster(const unsigned char *pBuf, int width8,
       free(pRasterBuf);                                                        \
     if (fd)                                                                    \
       close(fd);                                                               \
+    free_fs_error_buffers();                                                   \
     return (CODE);                                                             \
   }
 
@@ -445,6 +648,11 @@ int main(int argc, char *argv[]) {
         EXITPRINT(EXIT_FAILURE)
     }
 
+    if (ensure_fs_error_buffers(tHeader.cupsWidth) != 0) {
+      fprintf(stderr, "ERROR: Failed to allocate error buffers.\n");
+      EXITPRINT(EXIT_FAILURE);
+    }
+
     fprintf(stderr, "PAGE: %d %d\n", ++iCurrentPage, tHeader.NumCopies);
 
     startPage();
@@ -486,25 +694,43 @@ int main(int argc, char *argv[]) {
 
       // if original image is wider - rearrange buffer so that our calculated
       // lines come one-by-one without extra gaps
-      if (width_bytes < tHeader.cupsBytesPerLine) {
-        DEBUGPRINT("--------Compress line from %d to %d bytes", tHeader.cupsBytesPerLine, width_bytes);
-        iBytesChunk = compress_buffer(pRasterBuf, iBytesChunk,
-                                      tHeader.cupsBytesPerLine, width_bytes);
+      if (tHeader.cupsBitsPerPixel == 1) {
+        if (width_bytes < tHeader.cupsBytesPerLine) {
+          DEBUGPRINT("--------Compress line from %d to %d bytes", tHeader.cupsBytesPerLine, width_bytes);
+          iBytesChunk = compress_buffer(pRasterBuf, iBytesChunk,
+                                        tHeader.cupsBytesPerLine, width_bytes);
+        }
+      } else {
+        // For multi-byte pixels (8bpp/24bpp) we must not discard color bytes by
+        // compressing to width_bytes. Leave the buffer row-stride as cupsBytesPerLine
+        // and later dither from that stride. If read was truncated, pad it now.
+        unsigned expected = tHeader.cupsBytesPerLine * iBlockHeight;
+        if (iBytesChunk < expected) {
+          DEBUGPRINT("--------Restore truncated gap of %d bytes (multi-byte source)", expected - iBytesChunk);
+          memset(pRasterBuf + iBytesChunk, 0, expected - iBytesChunk);
+          iBytesChunk = expected;
+        }
       }
 
-      // runaround for sometimes truncated output of cupsRasterReadPixels
-      if (iBytesChunk < width_bytes * iBlockHeight) {
-        DEBUGPRINT("--------Restore truncated gap of %d bytes",
-                   width_bytes * iBlockHeight - iBytesChunk);
-        memset(pRasterBuf + iBytesChunk, 0,
-               width_bytes * iBlockHeight - iBytesChunk);
+      unsigned char *ditheredBuf = NULL;
+      if (tHeader.cupsBitsPerPixel != 1) {
+        // Use original row stride (cupsBytesPerLine) for dithering so we don't
+        // lose color bytes. After successful dithering, set iBytesChunk to the
+        // packed 1bpp size so later code can iterate over rows normally.
+        ditheredBuf = floyd_steinberg_dither_block(pRasterBuf, tHeader.cupsBytesPerLine,
+                                                   tHeader.cupsBitsPerPixel, tHeader.cupsNumColors,
+                                                   tHeader.cupsWidth, iBlockHeight, width_bytes);
+        if (!ditheredBuf) {
+          fprintf(stderr, "ERROR: Dithering failed.\n");
+          EXITPRINT(EXIT_FAILURE);
+        }
         iBytesChunk = width_bytes * iBlockHeight;
       }
 
       // lazy output of current raster. First check current line if it is zero.
       // if there were many zeroes and met non-zero - flush zeros by 'feed' cmd
       // if opposite - send non-zero chunk as raster.
-      unsigned char *pBuf = pRasterBuf;
+      unsigned char *pBuf = ditheredBuf ? ditheredBuf : pRasterBuf;
       unsigned char *pChunk = pBuf;
       const unsigned char *pEnd = pBuf + iBytesChunk;
       int nonzerolines = 0;
@@ -527,7 +753,7 @@ int main(int argc, char *argv[]) {
         pBuf += width_bytes;
       }
       send_raster(pChunk, width_bytes, nonzerolines);
-      //flushBuffer();
+      if (ditheredBuf) free(ditheredBuf);
     } // loop over page
 
     // page is finished.
@@ -542,6 +768,7 @@ int main(int argc, char *argv[]) {
       cutMedia();
 
     finishPage();
+    free_fs_error_buffers();
   } // loop over all pages pages
 
   if (settings.AdvanceMedia==CUPS_ADVANCE_JOB)

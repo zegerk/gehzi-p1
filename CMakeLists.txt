@@ -21,7 +21,7 @@ mark_as_advanced ( CUPSIMAGELIB )
 add_executable ( rastertozj rastertozj.c )
 target_compile_options ( rastertozj PRIVATE -Wall -fPIC )
 target_include_directories ( rastertozj PRIVATE ${CUPS_INCLUDE_DIR} )
-target_link_libraries ( rastertozj PRIVATE ${CUPS_LIBRARIES} ${CUPSIMAGELIB} )
+target_link_libraries ( rastertozj PRIVATE ${CUPS_LIBRARIES} ${CUPSIMAGELIB} m )
 
 if ( CMAKE_BUILD_TYPE STREQUAL "Debug" )
 	target_compile_definitions ( rastertozj PRIVATE DEBUGP )
@@ -54,6 +54,7 @@ if ( PPDC )
 	list (APPEND PPDS "${PPDDIR}/zj58.ppd" )
 	list (APPEND PPDS "${PPDDIR}/xp58.ppd" )
 	list (APPEND PPDS "${PPDDIR}/tm20.ppd" )
+	list (APPEND PPDS "${PPDDIR}/p1.ppd" )
 	list (APPEND PPDS "${PPDDIR}/zj80.ppd" )
 	ADD_CUSTOM_COMMAND ( OUTPUT ${PPDS}
 			COMMAND LANG=c ${PPDC} ${DRVSRC}

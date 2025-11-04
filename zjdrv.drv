@@ -25,7 +25,7 @@ Option "CutMedia/Cut Media" PickOne AnySetup 10
   Choice "EndOfJob/Cut at every job" "<</CutMedia 2>>setpagedevice"
 
 Option "Resolution/Resolution" PickOne AnySetup 10
- *Choice "203x203dpi/203 DPI Grayscale" "<</HWResolution[203 203]/cupsColorSpace 3>>setpagedevice"
+ *Choice "203x203dpi/203 DPI Grayscale" "<</HWResolution[203 203]/cupsColorSpace 3/cupsBitsPerColor 8/cupsBitsPerPixel 8>>setpagedevice"
 
 HWMargins 14 0 14 0
 
@@ -217,3 +217,26 @@ Installable "OptionCutter/Cutter"
   }
 }
 
+// 50mm printers
+{
+  #define POINTS 164
+  #define PIXELS 384
+
+  // model num is used by filter to determine raster width. 384 for 48mm, 560 for 70mm
+  ModelNumber $PIXELS
+  MinSize $POINTS 56
+  MaxSize $POINTS 9286
+
+ *CustomMedia "X50MMY57MM/50mm x 57mm" $POINTS 155 14 0 14 0 "<</PageSize[$POINTS 155]>>setpagedevice" "<</PageSize[$POINTS 155]>>setpagedevice"
+
+  // Gehzi P1
+  {
+    Manufacturer "Gehzi"
+    ModelName "P1"
+    PCFileName "p1.ppd"
+    Attribute "NickName" "" "Gehzi P1"
+    Attribute "ShortNickName" "" "P1"
+    Attribute "Product" "" "(P1)"
+    Attribute "1284DeviceID" "" "MFG:Gehzi;CMD:Gehzi;MDL:P1;CLS:PRINTER;"
+  }
+}

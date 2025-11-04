@@ -1,0 +1,10 @@
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/rastertozj.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/ppds.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/package.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/package_source.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/edit_cache.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/rebuild_cache.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/list_install_components.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/install.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/install/local.dir
+/home/zeger/Documents/git/zj-58/build/CMakeFiles/install/strip.dir
