@@ -1,11 +1,9 @@
 Zj-58, Zj-80 and other receipt printers
 =======================================
 
-CUPS filter for cheap thermal receipt printers as Zijiang ZJ-58, XPrinter XP-58, JZ-80 with cutter, Epson TM-T20, and may be any other printers understanding ESC/POS commands.
+CUPS filter for cheap thermal receipt printers as Zijiang ZJ-58, XPrinter XP-58, JZ-80 with cutter, Epson TM-T20, Gehzi P1 label printers, and many other devices that understand ESC/POS commands.
 
-Originally it was reverse-engineered filter for Zijiang zj-58 with it's specific PPD,
-but later it is revealed that it actually works with many other cheap 58mm printers, like
-Xprinter XP-58.
+Originally it was reverse-engineered filter for Zijiang zj-58 with its specific PPD, but later it was revealed that it actually works with many other cheap 58mm printers and small label printers (for example Gehzi P1). See the Included PPDs section below for P1/p1.ppd and other supported PPDs.
 
 Features
 --------
